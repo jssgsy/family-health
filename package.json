@@ -1,0 +1,16 @@
+{
+  "name": "family-health",
+  "version": "1.0.0",
+  "private": true,
+  "description": "家庭健康记录 · Cloudflare Workers + D1",
+  "scripts": {
+    "build": "echo \"no build step\"",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply family-health --local",
+    "db:migrate:remote": "wrangler d1 migrations apply family-health --remote"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

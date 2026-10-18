@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="家庭健康">
+<meta name="theme-color" content="#0f766e">
+<title>家庭健康记录</title>
+<style>
+:root {
+  color-scheme: light dark;
+  --bg: light-dark(#f4f6f8,#111318);
+  --surface: light-dark(#ffffff,#1b1e25);
+  --surface-2: light-dark(#f0f2f5,#252933);
+  --text: light-dark(#1e2430,#f2f4f8);
+  --muted: light-dark(#727987,#a1a8b5);
+  --border: light-dark(#e3e6eb,#343945);
+  --teal: light-dark(#0f766e,#4fd1c5);
+  --teal-bg: light-dark(#e6f5f3,#16302e);
+  --green: light-dark(#168653,#5bd69a);
+  --red: light-dark(#c74c4c,#ff8989);
+  --amber: light-dark(#b45309,#f5b544);
+  --shadow: 0 8px 26px light-dark(#1e293b0a,#00000020);
+}
+* { box-sizing: border-box; }
+body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif; -webkit-text-size-adjust:100%; }
+button,input,select,textarea { font:inherit; color:inherit; }
+button { cursor:pointer; }
+.app { min-height:100vh; padding:22px 16px 110px; }
+.shell { width:min(100%,720px); margin:0 auto; }
+.top { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:18px; }
+.brand { display:flex; align-items:center; gap:11px; }
+.logo { width:42px;height:42px;border-radius:14px;background:var(--teal-bg);display:grid;place-items:center;font-size:22px; }
+h1 { font-size:23px; line-height:1.15; margin:0; letter-spacing:-.5px; }
+.subtitle { font-size:13px;color:var(--muted);margin-top:5px; }
+.icon-btn { border:1px solid var(--border); background:var(--surface); border-radius:12px; padding:10px 13px; }
+.section { margin-top:16px; }
+.section-head { display:flex; justify-content:space-between; align-items:center; margin:0 2px 10px; gap:10px; }
+.section-head h2 { font-size:15px; margin:0; font-weight:700; }
+.section-head small { color:var(--muted); font-size:12px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:20px; padding:16px; box-shadow:var(--shadow); }
+
+.members { display:flex; gap:9px; overflow-x:auto; padding:2px 2px 6px; scrollbar-width:none; }
+.members::-webkit-scrollbar { display:none; }
+.member { flex:0 0 auto; display:flex; align-items:center; gap:9px; border:1px solid var(--border); background:var(--surface); border-radius:16px; padding:10px 14px 10px 11px; box-shadow:var(--shadow); }
+.member.active { border:2px solid var(--teal); padding:9px 13px 9px 10px; }
+.member .avatar { width:32px;height:32px;border-radius:11px;background:var(--surface-2);display:grid;place-items:center;font-size:17px; }
+.member .m-text { display:flex; flex-direction:column; gap:2px; text-align:left; }
+.member .m-name { font-size:14px; font-weight:650; white-space:nowrap; }
+.member .m-sub { font-size:11px; color:var(--muted); white-space:nowrap; }
+
+.overview { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+.stat { border-radius:14px; background:var(--surface-2); padding:12px; min-width:0; }
+.stat label { display:block; color:var(--muted); font-size:11px; margin-bottom:6px; }
+.stat .value { font-size:21px; font-weight:750; letter-spacing:-.5px; }
+.stat .value span { font-size:12px; font-weight:600; color:var(--muted); margin-left:3px; letter-spacing:0; }
+.stat .delta { font-size:11px; margin-top:5px; color:var(--muted); }
+.stat .delta.up { color:var(--amber); }
+.stat .delta.down { color:var(--teal); }
+.stat .delta.flat { color:var(--muted); }
+.stat.wide { grid-column:1 / -1; }
+.bmi-tag { font-size:11px; padding:2px 7px; border-radius:999px; background:var(--teal-bg); color:var(--teal); margin-left:6px; font-weight:600; }
+
+.tabs { display:flex; gap:6px; overflow-x:auto; padding-bottom:10px; scrollbar-width:none; }
+.tabs::-webkit-scrollbar { display:none; }
+.tab { flex:0 0 auto; border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:7px 13px; font-size:13px; color:var(--muted); }
+.tab.active { background:var(--teal); border-color:var(--teal); color:#fff; font-weight:650; }
+.chart-wrap { position:relative; }
+#chart { width:100%; height:230px; display:block; touch-action:pan-y; }
+.chart-empty { text-align:center; color:var(--muted); font-size:13px; padding:60px 8px; }
+.legend { display:flex; gap:14px; justify-content:center; font-size:12px; color:var(--muted); margin-top:8px; flex-wrap:wrap; }
+.legend i { display:inline-block; width:9px;height:9px;border-radius:3px;margin-right:5px; }
+
+.log-list { display:flex; flex-direction:column; }
+.log { display:flex; gap:11px; padding:13px 0; border-bottom:1px solid var(--border); align-items:flex-start; }
+.log:last-child { border-bottom:0; }
+.log-main { flex:1; min-width:0; }
+.log-date { font-size:14px; font-weight:650; display:flex; align-items:center; gap:8px; }
+.log-time { font-size:11px; color:var(--muted); font-weight:400; }
+.chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.chip { font-size:12px; background:var(--surface-2); border-radius:8px; padding:4px 8px; white-space:nowrap; }
+.chip b { font-weight:700; }
+.log-note { font-size:12px; color:var(--muted); margin-top:7px; overflow-wrap:anywhere; }
+.log-actions { display:flex; flex-direction:column; gap:4px; flex-shrink:0; }
+.icon-mini { border:1px solid var(--border); background:var(--surface); border-radius:9px; font-size:12px; padding:5px 8px; color:var(--muted); }
+.empty { text-align:center;color:var(--muted);font-size:13px;padding:26px 8px; }
+.bottom-note { text-align:center;color:var(--muted);font-size:11px;margin-top:18px;line-height:1.7; }
+
+.fab { position:fixed; right:18px; bottom:calc(18px + env(safe-area-inset-bottom)); width:58px;height:58px;border-radius:20px;border:0;background:var(--teal);color:#fff;font-size:28px;line-height:1;display:grid;place-items:center;box-shadow:0 10px 28px light-dark(#0f766e45,#000000aa); z-index:9; }
+.fab:active { transform:scale(.96); }
+
+.modal-backdrop { position:fixed;inset:0;background:#0007;display:none;align-items:flex-end;justify-content:center;padding:12px;z-index:10; }
+.modal-backdrop.show { display:flex; }
+.modal { width:min(100%,520px);max-height:calc(100dvh - 24px);display:flex;flex-direction:column;min-height:0;background:var(--surface);border:1px solid var(--border);border-radius:22px;padding:20px;box-shadow:0 18px 60px #0003; }
+#modalBody { min-height:0; overflow-y:auto; overscroll-behavior:contain; -webkit-overflow-scrolling:touch; }
+.modal h3 { margin:0 0 14px;font-size:18px; }
+.field { display:flex;flex-direction:column;gap:7px;margin:12px 0; }
+.field label { font-size:12px;color:var(--muted); }
+.form-hint { display:block;color:var(--muted);font-size:12px;line-height:1.7;margin:0 0 8px; }
+.grid-2 { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+input,select,textarea { border:1px solid var(--border); border-radius:11px; background:var(--surface); padding:10px 11px; width:100%; min-width:0; }
+textarea { resize:vertical; min-height:60px; }
+.emoji-row { display:flex; flex-wrap:wrap; gap:7px; }
+.emoji-row button { width:40px;height:40px;border-radius:12px;border:1px solid var(--border);background:var(--surface);font-size:20px; }
+.emoji-row button.active { border-color:var(--teal); background:var(--teal-bg); }
+.modal-actions { display:flex;gap:8px;margin-top:18px; }
+.modal-actions button { flex:1;padding:12px;border-radius:12px;border:1px solid var(--border);background:var(--surface); }
+.modal-actions .primary { background:var(--teal);color:#fff;border-color:var(--teal); }
+.modal-actions .danger { background:var(--red);color:#fff;border-color:var(--red); }
+.list-row { display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:8px;padding:11px 0;border-bottom:1px solid var(--border); }
+.list-row .lr-name { min-width:0; overflow-wrap:anywhere; font-weight:600; font-size:14px; }
+.list-row .lr-sub { font-size:11px; color:var(--muted); margin-top:3px; }
+.secondary-btn { border:1px solid var(--border); background:var(--surface); border-radius:11px; padding:9px 12px; font-size:13px; }
+.toast { position:fixed;left:50%;bottom:90px;transform:translate(-50%,20px);opacity:0;pointer-events:none;background:var(--text);color:var(--bg);padding:11px 16px;border-radius:12px;font-size:13px;transition:.2s;z-index:20;max-width:88vw;text-align:center; }
+.toast.show { opacity:1;transform:translate(-50%,0); }
+
+@media(min-width:620px) {
+  .app { padding:32px 24px 110px; }
+  .overview { grid-template-columns:repeat(4,minmax(0,1fr)); }
+  .modal-backdrop { align-items:center; }
+  .modal { max-height:calc(100dvh - 48px); }
+  .fab { right:calc(50vw - 360px); }
+}
+@media(max-width:360px) {
+  .stat .value { font-size:18px; }
+  .card { padding:13px; }
+  .grid-2 { grid-template-columns:1fr; }
+}
+</style>
+</head>
+<body>
+<main class="app">
+  <div class="shell">
+    <header class="top">
+      <div class="brand"><div class="logo">🌱</div><div><h1>家庭健康记录</h1><div class="subtitle" id="todayLabel">身高 · 体重 · 视力</div></div></div>
+      <button class="icon-btn" id="settingsBtn" aria-label="设置">⚙️ 设置</button>
+    </header>
+
+    <section class="section">
+      <div class="section-head"><h2>家庭成员</h2><small id="memberHint">点击切换</small></div>
+      <div class="members" id="members"></div>
+    </section>
+
+    <section class="section card">
+      <div class="section-head"><h2 id="overviewTitle">最近数据</h2><small id="overviewMeta"></small></div>
+      <div class="overview" id="overview"></div>
+    </section>
+
+    <section class="section card">
+      <div class="section-head"><h2>变化趋势</h2><small id="chartHint"></small></div>
+      <div class="tabs" id="chartTabs"></div>
+      <div class="chart-wrap">
+        <canvas id="chart"></canvas>
+        <div class="chart-empty" id="chartEmpty" hidden>这个指标还没有数据</div>
+      </div>
+      <div class="legend" id="chartLegend"></div>
+    </section>
+
+    <section class="section card">
+      <div class="section-head"><h2>全部记录</h2><small id="logCount"></small></div>
+      <div class="log-list" id="logs"></div>
+    </section>
+
+    <div class="bottom-note">数据保存在 Cloudflare D1 云端 · 家人打开同一网址即可共享<br>支持导出 / 导入 CSV 备份，导入会替换云端全部数据</div>
+  </div>
+</main>
+
+<button class="fab" id="addBtn" aria-label="添加记录">＋</button>
+
+<div class="modal-backdrop" id="modalBackdrop">
+  <div class="modal" role="dialog" aria-modal="true">
+    <h3 id="modalTitle">添加记录</h3>
+    <div id="modalBody"></div>
+    <div class="modal-actions" id="modalActions">
+      <button id="cancelModal">取消</button>
+      <button class="primary" id="saveModal">保存</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script src="/app.js"></script>
+</body>
+</html>
