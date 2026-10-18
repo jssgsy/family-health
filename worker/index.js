@@ -26,10 +26,6 @@ const NUMERIC_FIELDS = {
   weight: { column: 'weight', label: '体重', min: 0.5, max: 300, integer: false },
   visionLeft: { column: 'vision_left', label: '左眼视力', min: 0, max: 6, integer: false },
   visionRight: { column: 'vision_right', label: '右眼视力', min: 0, max: 6, integer: false },
-  head: { column: 'head', label: '头围', min: 20, max: 80, integer: false },
-  waist: { column: 'waist', label: '腰围', min: 30, max: 250, integer: false },
-  bodyFat: { column: 'body_fat', label: '体脂率', min: 1, max: 80, integer: false },
-  temperature: { column: 'temperature', label: '体温', min: 30, max: 45, integer: false },
   systolic: { column: 'systolic', label: '收缩压', min: 50, max: 300, integer: true },
   diastolic: { column: 'diastolic', label: '舒张压', min: 30, max: 200, integer: true },
   pulse: { column: 'pulse', label: '心率', min: 20, max: 250, integer: true },
@@ -94,7 +90,7 @@ async function getState(env) {
     env.DB.prepare('SELECT id, name, sex, birthday, emoji FROM members ORDER BY sort_order ASC, created_at ASC'),
     env.DB.prepare(
       `SELECT id, member_id, date, time, height, weight, vision_left, vision_right,
-              head, waist, body_fat, temperature, systolic, diastolic, pulse, note
+              systolic, diastolic, pulse, note
          FROM measurements
         ORDER BY date DESC, time DESC, id DESC`
     ),

@@ -15,10 +15,6 @@
     { key: 'weight', label: '体重', unit: 'kg', step: '0.1', short: '体重' },
     { key: 'visionLeft', label: '左眼视力', unit: '', step: '0.1', short: '左眼' },
     { key: 'visionRight', label: '右眼视力', unit: '', step: '0.1', short: '右眼' },
-    { key: 'head', label: '头围', unit: 'cm', step: '0.1', short: '头围' },
-    { key: 'waist', label: '腰围', unit: 'cm', step: '0.1', short: '腰围' },
-    { key: 'bodyFat', label: '体脂率', unit: '%', step: '0.1', short: '体脂率' },
-    { key: 'temperature', label: '体温', unit: '℃', step: '0.1', short: '体温' },
     { key: 'systolic', label: '收缩压', unit: 'mmHg', step: '1', short: '收缩压' },
     { key: 'diastolic', label: '舒张压', unit: 'mmHg', step: '1', short: '舒张压' },
     { key: 'pulse', label: '心率', unit: '次/分', step: '1', short: '心率' },
@@ -36,10 +32,6 @@
         { field: 'visionRight', name: '右眼', color: '#e11d48' },
       ],
     },
-    { key: 'head', label: '头围', series: [{ field: 'head', name: '头围', color: '#7c3aed' }] },
-    { key: 'waist', label: '腰围', series: [{ field: 'waist', name: '腰围', color: '#c2410c' }] },
-    { key: 'bodyFat', label: '体脂率', series: [{ field: 'bodyFat', name: '体脂率', color: '#db2777' }] },
-    { key: 'temperature', label: '体温', series: [{ field: 'temperature', name: '体温', color: '#dc2626' }] },
     {
       key: 'bp',
       label: '血压/心率',
@@ -469,10 +461,6 @@
     if (bmi !== null) push('BMI', bmi, '');
     if (num(m.visionLeft) !== null || num(m.visionRight) !== null)
       push('视力', `${fmt(m.visionLeft) || '—'}/${fmt(m.visionRight) || '—'}`, '');
-    if (num(m.head) !== null) push('头围', fmt(m.head), 'cm');
-    if (num(m.waist) !== null) push('腰围', fmt(m.waist), 'cm');
-    if (num(m.bodyFat) !== null) push('体脂率', fmt(m.bodyFat), '%');
-    if (num(m.temperature) !== null) push('体温', fmt(m.temperature), '℃');
     if (num(m.systolic) !== null || num(m.diastolic) !== null)
       push('血压', `${fmt(m.systolic) || '—'}/${fmt(m.diastolic) || '—'}`, '');
     if (num(m.pulse) !== null) push('心率', fmt(m.pulse), '次/分');
