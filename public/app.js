@@ -170,6 +170,9 @@
   let editingRecordId = null;
   let editingMemberId = null;
   let modalMode = null;
+  let chartPoints = [];      // 当前图上的所有点（画布像素坐标），用于点击命中
+  let chartGeom = null;      // 当前图的几何信息
+  let chartSelection = null; // 当前选中的点：{ rowId, field }
 
   // 支持 ?metric=vision 这样的链接，方便收藏某个指标的趋势图
   const urlMetric = new URLSearchParams(location.search).get('metric');
@@ -188,6 +191,13 @@
   const latestRow = (memberId) => {
     const rows = rowsOf(memberId);
     return rows.length ? rows[rows.length - 1] : null;
+  };
+
+  /** 从新到旧找第一条满足条件的记录：「最近数据」按指标各取自己最近的值。 */
+  const latestRowWhere = (memberId, predicate) => {
+    const rows = rowsOf(memberId);
+    for (let i = rows.length - 1; i >= 0; i--) if (predicate(rows[i])) return rows[i];
+    return null;
   };
 
   /** 返回某字段的最新值以及上一次的取值（用于计算变化量）。 */
@@ -257,27 +267,34 @@
       return { cls: diff > 0 ? 'up' : 'down', text: `${fmtSigned(diff)} vs ${prev.date}` };
     };
 
-    const bmi = computeBmi(last);
+    // 每一项都取「该指标自己最近一次有值的记录」，避免最新那条没测的指标显示成 —
+    const heightRow = latestRowWhere(m.id, (r) => num(r.height) !== null);
+    const weightRow = latestRowWhere(m.id, (r) => num(r.weight) !== null);
+    const bmiRow = latestRowWhere(m.id, (r) => computeBmi(r) !== null);
+    const visionRow = latestRowWhere(m.id, (r) => num(r.visionLeft) !== null || num(r.visionRight) !== null);
+
+    const bmi = bmiRow ? computeBmi(bmiRow) : null;
     const years = ageInYears(m.birthday);
     const showBmiTag = bmi !== null && (years === null || years >= 18);
     const bmiValue = bmi === null ? '—' : `${bmi}${showBmiTag ? `<span class="bmi-tag">${bmiCategory(bmi)}</span>` : ''}`;
 
-    const visionValue =
-      num(last.visionLeft) === null && num(last.visionRight) === null
-        ? '—'
-        : `${fmt(last.visionLeft) || '—'} / ${fmt(last.visionRight) || '—'}`;
+    const visionValue = visionRow
+      ? `${fmt(visionRow.visionLeft) || '—'} / ${fmt(visionRow.visionRight) || '—'}`
+      : '—';
 
     const visionDelta = () => {
       const l = fieldTrend(m.id, 'visionLeft');
       const r = fieldTrend(m.id, 'visionRight');
       if (!l.latest && !r.latest) return { cls: 'flat', text: '—' };
       if (!l.prev && !r.prev) return { cls: 'flat', text: '首次记录' };
-      return { cls: 'flat', text: '左眼 / 右眼' };
+      // 视力值来自更早的记录时，明确标出日期，避免与上面的「更新于」混淆
+      const from = visionRow && visionRow.id !== last.id ? ` · ${visionRow.date}` : '';
+      return { cls: 'flat', text: `左眼 / 右眼${from}` };
     };
 
     box.innerHTML = [
-      statCard('身高', `${fmt(last.height) || '—'}<span>cm</span>`, delta('height')),
-      statCard('体重', `${fmt(last.weight) || '—'}<span>kg</span>`, delta('weight')),
+      statCard('身高', `${heightRow ? fmt(heightRow.height) : '—'}<span>cm</span>`, delta('height')),
+      statCard('体重', `${weightRow ? fmt(weightRow.weight) : '—'}<span>kg</span>`, delta('weight')),
       statCard('BMI', bmiValue, delta('bmi')),
       statCard('视力（左/右）', visionValue, visionDelta()),
     ].join('');
@@ -321,12 +338,18 @@
       empty.hidden = false;
       legend.innerHTML = '';
       $('chartHint').textContent = '';
+      chartPoints = [];
+      chartGeom = null;
+      chartSelection = null;
+      hideChartTip();
       return;
     }
     canvas.style.display = 'block';
     empty.hidden = true;
+    hideChartTip();
 
-    $('chartHint').textContent = series.length > 1 ? `${series[0].points.length} 次记录` : `最近 ${series[0].points.length} 次记录`;
+    $('chartHint').textContent =
+      (series.length > 1 ? `${series[0].points.length} 次记录` : `最近 ${series[0].points.length} 次记录`) + ' · 点击圆点看时间';
     legend.innerHTML =
       series.length > 1
         ? series.map((s) => `<span><i style="background:${s.color}"></i>${esc(s.name)}</span>`).join('')
@@ -370,6 +393,10 @@
     const xCount = Math.max(rows.length - 1, 1);
     const xOf = (index) => padL + (rows.length <= 1 ? plotW / 2 : (index / xCount) * plotW);
     const yOf = (value) => padT + plotH - ((value - min) / (max - min)) * plotH;
+
+    // 记录几何信息与每个点的像素坐标，供点击命中使用
+    chartGeom = { wrapW, padL, padR, padT, padB, plotW, plotH };
+    chartPoints = [];
 
     // 网格与 Y 轴刻度
     ctx.font = '11px -apple-system,sans-serif';
@@ -421,6 +448,8 @@
       s.points.forEach((p) => {
         const x = xOf(p.index);
         const y = yOf(p.value);
+        const row = rows[p.index];
+        const selected = row && chartSelection && chartSelection.rowId === row.id && chartSelection.field === s.field;
         ctx.beginPath();
         ctx.arc(x, y, 3.5, 0, Math.PI * 2);
         ctx.fill();
@@ -429,6 +458,12 @@
         ctx.stroke();
         ctx.strokeStyle = s.color;
         ctx.lineWidth = 2;
+        if (selected) {
+          ctx.beginPath();
+          ctx.arc(x, y, 7.5, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        if (row) chartPoints.push({ x, y, row, field: s.field, color: s.color, value: p.value });
       });
 
       // 最后一个点的数值
@@ -450,6 +485,97 @@
         ctx.font = '11px -apple-system,sans-serif';
       }
     });
+
+    // 选中的点若已不在当前图上（换指标 / 数据变化），取消选中
+    if (chartSelection && !chartPoints.some((p) => p.row.id === chartSelection.rowId && p.field === chartSelection.field)) {
+      chartSelection = null;
+    }
+  };
+
+  /* --------------------------- 趋势图上的点交互 --------------------------- */
+
+  const unitOf = (field) => {
+    const f = FIELDS.find((x) => x.key === field);
+    return f && f.unit ? f.unit : '';
+  };
+
+  const hideChartTip = () => {
+    const tip = $('chartTip');
+    if (tip) tip.hidden = true;
+  };
+
+  /** 把鼠标 / 手指坐标换算成画布坐标，返回最近的点（超过阈值算没点中）。 */
+  const chartHit = (event) => {
+    const canvas = $('chart');
+    if (!canvas || !chartGeom || !chartPoints.length) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = (event.clientX - rect.left) * (chartGeom.wrapW / rect.width);
+    const y = (event.clientY - rect.top) * (CHART_H / rect.height);
+    let best = null;
+    let bestD = Infinity;
+    chartPoints.forEach((pt) => {
+      const d = Math.hypot(pt.x - x, pt.y - y);
+      if (d < bestD) {
+        bestD = d;
+        best = pt;
+      }
+    });
+    return best && bestD <= 26 ? best : null;
+  };
+
+  const showChartTip = (pt) => {
+    const tip = $('chartTip');
+    if (!tip || !chartGeom) return;
+    const meta = METRICS.find((x) => x.key === activeMetric) || METRICS[0];
+    const rowsHtml = meta.series
+      .map((s) => ({ s, value: num(pt.row[s.field]) }))
+      .filter((x) => x.value !== null)
+      .map(
+        ({ s, value }) =>
+          `<div class="tip-row"><i style="background:${s.color}"></i>${esc(s.name)}<b>${fmt(value)}${esc(unitOf(s.field))}</b></div>`
+      )
+      .join('');
+    tip.innerHTML = `<div class="tip-date">${esc(pt.row.date)}<span class="tip-time">${esc(pt.row.time)}</span></div>${rowsHtml}`;
+    tip.hidden = false;
+    const tipW = tip.offsetWidth;
+    const tipH = tip.offsetHeight;
+    const left = Math.min(Math.max(pt.x, tipW / 2 + 4), Math.max(chartGeom.wrapW - tipW / 2 - 4, tipW / 2 + 4));
+    tip.style.left = left + 'px';
+    tip.style.top = Math.max(pt.y - 12, tipH + 4) + 'px';
+  };
+
+  const selectedChartPoint = () =>
+    chartSelection
+      ? chartPoints.find((p) => p.row.id === chartSelection.rowId && p.field === chartSelection.field) || null
+      : null;
+
+  /** 点击圆点：选中并显示日期时间；点空白处则取消选中。 */
+  const onChartClick = (event) => {
+    const hit = chartHit(event);
+    if (!hit) {
+      if (chartSelection) {
+        chartSelection = null;
+        renderChart();
+      }
+      hideChartTip();
+      return;
+    }
+    chartSelection = { rowId: hit.row.id, field: hit.field };
+    renderChart();
+    showChartTip(hit);
+  };
+
+  /** 鼠标悬停时预览提示，移开后回到已选中的点。 */
+  const onChartMove = (event) => {
+    const hit = chartHit(event);
+    if (hit) {
+      showChartTip(hit);
+      return;
+    }
+    const selected = selectedChartPoint();
+    if (selected) showChartTip(selected);
+    else hideChartTip();
   };
 
   const chipsFor = (m) => {
@@ -830,6 +956,13 @@
       openModal('measurement');
     };
     $('settingsBtn').onclick = () => openModal('settings');
+    $('chart').onclick = onChartClick;
+    $('chart').onmousemove = onChartMove;
+    $('chart').onmouseleave = () => {
+      const selected = selectedChartPoint();
+      if (selected) showChartTip(selected);
+      else hideChartTip();
+    };
     $('modalBackdrop').onclick = (e) => {
       if (e.target === $('modalBackdrop')) closeModal();
     };
