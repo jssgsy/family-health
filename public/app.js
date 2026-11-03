@@ -13,6 +13,7 @@
   const FIELDS = [
     { key: 'height', label: '身高', unit: 'cm', step: '0.1', short: '身高' },
     { key: 'weight', label: '体重', unit: 'kg', step: '0.1', short: '体重' },
+    { key: 'waist', label: '腰围', unit: 'cm', step: '0.1', short: '腰围' },
     { key: 'visionLeft', label: '左眼视力', unit: '', step: '0.1', short: '左眼' },
     { key: 'visionRight', label: '右眼视力', unit: '', step: '0.1', short: '右眼' },
     { key: 'systolic', label: '收缩压', unit: 'mmHg', step: '1', short: '收缩压' },
@@ -23,6 +24,7 @@
   const METRICS = [
     { key: 'height', label: '身高', series: [{ field: 'height', name: '身高', color: '#2563eb' }] },
     { key: 'weight', label: '体重', series: [{ field: 'weight', name: '体重', color: '#0f766e' }] },
+    { key: 'waist', label: '腰围', series: [{ field: 'waist', name: '腰围', color: '#7c3aed' }] },
     { key: 'bmi', label: 'BMI', series: [{ field: 'bmi', name: 'BMI', color: '#b45309' }] },
     {
       key: 'vision',
@@ -126,11 +128,20 @@
     if (password) headers['x-app-password'] = password;
     if (body !== undefined) headers['content-type'] = 'application/json';
 
-    const res = await fetch(API_BASE + path, {
-      method,
-      headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let res;
+    try {
+      res = await fetch(API_BASE + path, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (err) {
+      if (err && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        throw new Error('网络超时，请检查网络后再试');
+      }
+      throw new Error('网络连接失败，请检查网络后再试');
+    }
 
     if (res.status === 401 && allowRetry) {
       const input = prompt('请输入访问密码（在 Cloudflare 上设置的 APP_PASSWORD）');
@@ -583,6 +594,7 @@
     const push = (label, value, unit) => chips.push(`<span class="chip">${label} <b>${value}</b>${unit || ''}</span>`);
     if (num(m.height) !== null) push('身高', fmt(m.height), 'cm');
     if (num(m.weight) !== null) push('体重', fmt(m.weight), 'kg');
+    if (num(m.waist) !== null) push('腰围', fmt(m.waist), 'cm');
     const bmi = computeBmi(m);
     if (bmi !== null) push('BMI', bmi, '');
     if (num(m.visionLeft) !== null || num(m.visionRight) !== null)
@@ -637,6 +649,272 @@
       day: 'numeric',
       weekday: 'short',
     });
+  };
+
+  /* ---------------- 记录表单：按使用频率排序 + 上次值一键沿用 ---------------- */
+
+  // 表单顺序属于个人习惯，只存在本机浏览器里（不同设备各存各的），不写进云端数据库。
+  const PREFS_KEY = 'familyHealth.fieldPrefs';
+  const HALF_LIFE_DAYS = 60; // 使用次数的衰减半衰期：越久没用的项排得越靠后
+  const RECENT_USE = 0.5;    // 衰减权重 ≥ 0.5（约两个月内用过）算作「最近常用」
+
+  const loadPrefs = () => {
+    try {
+      const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
+      return p && typeof p === 'object' ? p : {};
+    } catch {
+      return {};
+    }
+  };
+  const savePrefs = (p) => localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+
+  /** 该成员手动调整过的指标顺序（没有则返回 null，表示用自动排序）。 */
+  const manualOrderOf = (memberId) => {
+    const list = loadPrefs().orders?.[memberId];
+    return Array.isArray(list) && list.length ? list : null;
+  };
+  const setManualOrderOf = (memberId, keys) => {
+    const p = loadPrefs();
+    p.orders = p.orders || {};
+    p.orders[memberId] = keys;
+    savePrefs(p);
+  };
+  const clearManualOrderOf = (memberId) => {
+    const p = loadPrefs();
+    if (p.orders) delete p.orders[memberId];
+    savePrefs(p);
+  };
+
+  /** 每个指标的使用情况：score 是按时间衰减的加权次数，count 是实际填写次数。 */
+  const usageStats = (memberId) => {
+    const stats = {};
+    FIELDS.forEach((f) => {
+      stats[f.key] = { score: 0, count: 0 };
+    });
+    const now = Date.now();
+    for (const m of data.measurements) {
+      if (m.memberId !== memberId) continue;
+      const t = new Date(`${m.date}T00:00:00`).getTime();
+      if (Number.isNaN(t)) continue;
+      const weight = Math.pow(0.5, Math.max(0, now - t) / 86400000 / HALF_LIFE_DAYS);
+      for (const f of FIELDS) {
+        if (num(m[f.key]) === null) continue;
+        stats[f.key].score += weight;
+        stats[f.key].count += 1;
+      }
+    }
+    return stats;
+  };
+
+  /** 表单里指标的显示顺序：自定义顺序优先，否则按使用频率从高到低。 */
+  const rankedFieldKeys = (memberId, stats) => {
+    const base = FIELDS.map((f, i) => ({ key: f.key, i, s: stats[f.key].score }));
+    const manual = manualOrderOf(memberId);
+    if (!manual) return base.sort((a, b) => b.s - a.s || a.i - b.i).map((x) => x.key);
+    const byKey = new Map(base.map((x) => [x.key, x]));
+    const picked = [];
+    for (const key of manual) {
+      const hit = byKey.get(key);
+      if (hit) {
+        picked.push(hit.key);
+        byKey.delete(key);
+      }
+    }
+    const rest = [...byKey.values()].sort((a, b) => b.s - a.s || a.i - b.i);
+    return [...picked, ...rest.map((x) => x.key)];
+  };
+
+  /** 某个指标最近一次被记录的值，用于「上次 170」这种一键沿用。 */
+  const lastValueOf = (memberId, key) => {
+    const rows = rowsOf(memberId);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      if (num(rows[i][key]) !== null) return { value: num(rows[i][key]), date: rows[i].date };
+    }
+    return null;
+  };
+
+  /** 每次保存固定用同一个 id：网络超时后重点保存，服务端会按这个 id 去重。 */
+  const makeRequestId = () => 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 9);
+
+  let mform = null; // 当前打开的记录表单的状态
+  let saving = false; // 正在提交：期间禁止再次提交、关闭弹窗
+
+  /** 提交中锁定底部按钮，避免连点 / 网络慢时重复提交。 */
+  const setSaving = (on) => {
+    const saveBtn = $('saveModal');
+    if (saveBtn) {
+      saveBtn.disabled = on;
+      saveBtn.textContent = on ? '保存中…' : '保存';
+    }
+    const cancelBtn = $('cancelModal');
+    if (cancelBtn) cancelBtn.disabled = on;
+    $('modalBackdrop').classList.toggle('saving', on);
+  };
+
+  const fieldHtml = (key) => {
+    const f = FIELDS.find((x) => x.key === key);
+    const last = lastValueOf(mform.memberId, key);
+    const prev = last
+      ? `<button type="button" class="prev-btn" data-prev="${key}" title="上次记录于 ${esc(last.date)}">上次 ${esc(fmt(last.value))}</button>`
+      : '';
+    return `<div class="field">
+      <div class="field-head"><label for="fld_${key}">${esc(f.short)}${f.unit ? `（${esc(f.unit)}）` : ''}</label>${prev}</div>
+      <input id="fld_${key}" type="number" step="${f.step}" inputmode="decimal" placeholder="可选" value="${esc(mform.values[key] || '')}">
+    </div>`;
+  };
+
+  const gridHtml = (keys) => `<div class="grid-2">${keys.map((k) => fieldHtml(k)).join('')}</div>`;
+
+  const formHeadHtml = () =>
+    `<div class="form-head">
+      <span class="fh-title">记录项目</span>
+      <span class="fh-hint">${mform.auto ? '按使用频率排序' : '自定义顺序'}</span>
+      <button type="button" class="link-btn" id="orderBtn">调整顺序</button>
+      ${mform.auto ? '' : '<button type="button" class="link-btn" id="autoBtn">恢复自动排序</button>'}
+    </div>`;
+
+  const reorderHtml = () => {
+    const rows = mform.order
+      .map((key, i) => {
+        const f = FIELDS.find((x) => x.key === key);
+        const st = mform.stats[key];
+        const used = st.count ? `用过 ${st.count} 次` : '还没用过';
+        return `<div class="order-row">
+          <span class="or-name">${esc(f.short)}${f.unit ? `（${esc(f.unit)}）` : ''}</span>
+          <span class="or-use">${used}</span>
+          <button type="button" class="icon-mini" data-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button type="button" class="icon-mini" data-down="${i}" ${i === mform.order.length - 1 ? 'disabled' : ''}>↓</button>
+        </div>`;
+      })
+      .join('');
+    return (
+      '<p class="form-hint">上下挪动调整顺序，保存后这位成员的记录表单就按这个顺序显示。也可以随时点「恢复自动排序」。</p>' +
+      `<div class="order-list">${rows}</div>`
+    );
+  };
+
+  /** 渲染记录表单：常用项直接铺开，久未使用的项折叠在「其他项目」里。 */
+  const renderMeasurementForm = () => {
+    if (!mform) return;
+    const body = $('modalBody');
+
+    if (mform.reorder) {
+      body.innerHTML = reorderHtml();
+      body.querySelectorAll('[data-up]').forEach((b) => {
+        b.onclick = () => moveField(Number(b.dataset.up), -1);
+      });
+      body.querySelectorAll('[data-down]').forEach((b) => {
+        b.onclick = () => moveField(Number(b.dataset.down), 1);
+      });
+      return;
+    }
+
+    const keys = mform.order;
+    let main = mform.auto ? keys.filter((k) => mform.stats[k].score >= RECENT_USE) : keys;
+    let tail = mform.auto ? keys.filter((k) => mform.stats[k].score < RECENT_USE) : [];
+    if (!main.length) {
+      main = keys; // 还没有任何数据时全部显示，不做折叠
+      tail = [];
+    }
+
+    const last = mform.editId ? null : latestRow(mform.memberId);
+    const lastFilled = last ? FIELDS.filter((f) => num(last[f.key]) !== null).length : 0;
+
+    body.innerHTML = [
+      '<p class="form-hint">填写这次测到的项目即可，留空的项会保持不记录。</p>',
+      `<div class="grid-2"><div class="field"><label for="fDate">日期</label><input id="fDate" type="date" value="${esc(mform.values.date || today())}"></div><div class="field"><label for="fTime">时间</label><input id="fTime" type="time" value="${esc(mform.values.time || nowText())}"></div></div>`,
+      last
+        ? `<div class="reuse-row"><span class="reuse-info">上次记录 ${esc(last.date)} ${esc(last.time)} · 填了 ${lastFilled} 项</span><button type="button" class="secondary-btn" id="reuseBtn">沿用上次</button></div>`
+        : '',
+      formHeadHtml(),
+      gridHtml(main),
+      tail.length
+        ? `<button type="button" class="more-toggle" id="moreBtn">${mform.expanded ? '▾' : '▸'} 其他项目（${tail.length}）</button><div class="grid-2" id="moreBox" ${mform.expanded ? '' : 'hidden'}>${tail.map((k) => fieldHtml(k)).join('')}</div>`
+        : '',
+      `<div class="field"><label for="fNote">备注</label><textarea id="fNote" maxlength="200" placeholder="例如：体检 / 早晨空腹">${esc(mform.values.note || '')}</textarea></div>`,
+    ].join('');
+
+    // 记住输入的内容，重排 / 展开时不会丢失
+    body.querySelectorAll('input,textarea').forEach((el) => {
+      el.addEventListener('input', () => {
+        if (!mform) return;
+        if (el.id.startsWith('fld_')) mform.values[el.id.slice(4)] = el.value;
+        else if (el.id === 'fNote') mform.values.note = el.value;
+        else if (el.id === 'fDate') mform.values.date = el.value;
+        else if (el.id === 'fTime') mform.values.time = el.value;
+      });
+    });
+
+    body.querySelectorAll('[data-prev]').forEach((b) => {
+      b.onclick = () => {
+        const key = b.dataset.prev;
+        const prev = lastValueOf(mform.memberId, key);
+        const input = $('fld_' + key);
+        if (!prev || !input) return;
+        input.value = fmt(prev.value);
+        mform.values[key] = input.value;
+        input.focus();
+        input.classList.add('flash');
+        setTimeout(() => input.classList.remove('flash'), 700);
+      };
+    });
+
+    const reuseBtn = $('reuseBtn');
+    if (reuseBtn) {
+      reuseBtn.onclick = () => {
+        const row = latestRow(mform.memberId);
+        if (!row) return;
+        mform.expanded = true; // 先展开，保证填进去的值都看得见
+        renderMeasurementForm();
+        let n = 0;
+        FIELDS.forEach((f) => {
+          if (num(row[f.key]) === null) return;
+          const el = $('fld_' + f.key);
+          if (!el) return;
+          el.value = fmt(row[f.key]);
+          mform.values[f.key] = el.value;
+          n++;
+        });
+        toast(n ? `已沿用 ${row.date} 的 ${n} 项数据` : '上次记录没有可沿用的数据');
+      };
+    }
+
+    const moreBtn = $('moreBtn');
+    if (moreBtn) moreBtn.onclick = () => {
+      mform.expanded = !mform.expanded;
+      renderMeasurementForm();
+    };
+
+    $('orderBtn').onclick = () => {
+      mform.reorder = true;
+      renderMeasurementForm();
+      setModalActions('<button id="cancelModal">完成</button>');
+    };
+
+    const autoBtn = $('autoBtn');
+    if (autoBtn) {
+      autoBtn.onclick = () => {
+        clearManualOrderOf(mform.memberId);
+        mform.auto = true;
+        mform.order = rankedFieldKeys(mform.memberId, mform.stats);
+        renderMeasurementForm();
+        toast('已恢复按使用频率排序');
+      };
+    }
+  };
+
+  /** 手动上下挪动一个指标；一动就切换成「自定义顺序」。 */
+  const moveField = (index, delta) => {
+    if (!mform) return;
+    const to = index + delta;
+    if (to < 0 || to >= mform.order.length) return;
+    const order = mform.order.slice();
+    const [item] = order.splice(index, 1);
+    order.splice(to, 0, item);
+    mform.order = order;
+    mform.auto = false;
+    setManualOrderOf(mform.memberId, order);
+    renderMeasurementForm();
   };
 
   /* --------------------------------- 弹窗 --------------------------------- */
@@ -754,19 +1032,33 @@
       $('modalBackdrop').classList.add('show');
     }
     $('modalTitle').textContent = m ? '编辑记录' : '记录一次数据';
-    $('modalBody').innerHTML =
-      '<p class="form-hint">填写这次测到的项目即可，留空的项会保持不记录。</p>' +
-      `<div class="grid-2"><div class="field"><label for="fDate">日期</label><input id="fDate" type="date" value="${esc(m?.date || today())}"></div><div class="field"><label for="fTime">时间</label><input id="fTime" type="time" value="${esc(m?.time || nowText())}"></div></div>` +
-      '<div class="grid-2">' +
-      FIELDS.map(
-        (f) =>
-          `<div class="field"><label for="fld_${f.key}">${f.short}${f.unit ? `（${f.unit}）` : ''}</label><input id="fld_${f.key}" type="number" step="${f.step}" inputmode="decimal" placeholder="可选" value="${m && num(m[f.key]) !== null ? fmt(m[f.key]) : ''}"></div>`
-      ).join('') +
-      '</div>' +
-      `<div class="field"><label for="fNote">备注</label><textarea id="fNote" maxlength="200" placeholder="例如：体检 / 早晨空腹">${esc(m?.note || '')}</textarea></div>`;
+
+    const memberId = m ? m.memberId : activeMember;
+    const stats = usageStats(memberId);
+    const values = {};
+    FIELDS.forEach((f) => {
+      values[f.key] = m && num(m[f.key]) !== null ? fmt(m[f.key]) : '';
+    });
+    values.note = m?.note || '';
+    values.date = m?.date || today();
+    values.time = m?.time || nowText();
+
+    mform = {
+      memberId,
+      editId: m?.id || null,
+      requestId: m ? null : makeRequestId(),
+      values,
+      stats,
+      auto: !manualOrderOf(memberId),
+      order: rankedFieldKeys(memberId, stats),
+      expanded: !!m, // 编辑时全部展开，方便核对
+      reorder: false,
+    };
+    renderMeasurementForm();
 
     setTimeout(() => {
-      const first = $('fld_height');
+      if (!mform) return;
+      const first = $('fld_' + (mform.order[0] || ''));
       if (!m && first && window.innerWidth > 620) first.focus();
     }, 30);
   };
@@ -776,66 +1068,85 @@
     modalMode = null;
     editingRecordId = null;
     editingMemberId = null;
+    mform = null;
   };
 
   const saveModal = () =>
     run(async () => {
-      if (modalMode === 'member') {
-        const name = $('fName').value.trim();
-        const birthday = $('fBirthday').value;
-        const sex = $('fSex').value;
-        const emoji = $('modalBody').querySelector('[data-emoji].active')?.dataset.emoji || '🙂';
-        if (!name) {
-          toast('请填写名字');
-          $('fName')?.focus();
+      if (saving) return; // 连点 / 双击：只处理第一次
+      saving = true;
+      setSaving(true);
+      try {
+        if (modalMode === 'member') {
+          const name = $('fName').value.trim();
+          const birthday = $('fBirthday').value;
+          const sex = $('fSex').value;
+          const emoji = $('modalBody').querySelector('[data-emoji].active')?.dataset.emoji || '🙂';
+          if (!name) {
+            toast('请填写名字');
+            $('fName')?.focus();
+            return;
+          }
+          const body = { name, birthday, sex, emoji };
+          if (editingMemberId) {
+            await api('/members/' + encodeURIComponent(editingMemberId), { method: 'PATCH', body });
+          } else {
+            const created = await api('/members', { method: 'POST', body });
+            activeMember = created.id;
+          }
+          await load();
+          closeModal();
+          toast('已保存');
           return;
         }
-        const body = { name, birthday, sex, emoji };
-        if (editingMemberId) {
-          await api('/members/' + encodeURIComponent(editingMemberId), { method: 'PATCH', body });
-        } else {
-          const created = await api('/members', { method: 'POST', body });
-          activeMember = created.id;
-        }
-        await load();
-        closeModal();
-        toast('已保存');
-        return;
-      }
 
-      if (modalMode === 'measurement') {
-        const body = {
-          memberId: activeMember,
-          date: $('fDate').value,
-          time: $('fTime').value || nowText(),
-          note: $('fNote').value.trim(),
-        };
-        for (const f of FIELDS) {
-          const raw = $(`fld_${f.key}`).value.trim();
-          if (editingRecordId && raw === '') body[f.key] = null;
-          else if (raw !== '') body[f.key] = Number(raw);
-        }
-        const anyValue = FIELDS.some((f) => body[f.key] !== undefined && body[f.key] !== null) || body.note;
-        if (!anyValue) {
-          toast('请至少填写一项数据');
+        if (modalMode === 'measurement') {
+          // 折叠起来的项目不在 DOM 里，所以统一从表单状态取值
+          const DOM_IDS = { date: 'fDate', time: 'fTime', note: 'fNote' };
+          const val = (key) => {
+            const v = mform && mform.values ? mform.values[key] : undefined;
+            if (v !== undefined && v !== null) return String(v).trim();
+            const el = $(DOM_IDS[key] || `fld_${key}`);
+            return el ? String(el.value).trim() : '';
+          };
+          const body = {
+            memberId: (mform && mform.memberId) || activeMember,
+            date: val('date') || today(),
+            time: val('time') || nowText(),
+            note: val('note'),
+          };
+          for (const f of FIELDS) {
+            const raw = val(f.key);
+            if (editingRecordId && raw === '') body[f.key] = null;
+            else if (raw !== '') body[f.key] = Number(raw);
+          }
+          const anyValue = FIELDS.some((f) => body[f.key] !== undefined && body[f.key] !== null) || body.note;
+          if (!anyValue) {
+            toast('请至少填写一项数据');
+            return;
+          }
+          if (!body.memberId) {
+            toast('请先添加家庭成员');
+            return;
+          }
+          if (editingRecordId) {
+            await api('/measurements/' + encodeURIComponent(editingRecordId), { method: 'PATCH', body });
+          } else {
+            // 固定的 requestId：网络超时后再点保存，服务端会识别成同一次提交
+            if (mform && mform.requestId) body.id = mform.requestId;
+            await api('/measurements', { method: 'POST', body });
+          }
+          await load();
+          closeModal();
+          toast('已保存');
           return;
         }
-        if (!activeMember) {
-          toast('请先添加家庭成员');
-          return;
-        }
-        if (editingRecordId) {
-          await api('/measurements/' + encodeURIComponent(editingRecordId), { method: 'PATCH', body });
-        } else {
-          await api('/measurements', { method: 'POST', body });
-        }
-        await load();
-        closeModal();
-        toast('已保存');
-        return;
-      }
 
-      closeModal();
+        closeModal();
+      } finally {
+        saving = false;
+        setSaving(false);
+      }
     });
 
   /* -------------------------------- 导出导入 -------------------------------- */
@@ -964,11 +1275,19 @@
       else hideChartTip();
     };
     $('modalBackdrop').onclick = (e) => {
-      if (e.target === $('modalBackdrop')) closeModal();
+      if (e.target === $('modalBackdrop') && !saving) closeModal();
     };
     $('modalActions').onclick = (e) => {
-      if (e.target.id === 'cancelModal') closeModal();
-      else if (e.target.id === 'saveModal') saveModal();
+      if (e.target.id === 'cancelModal') {
+        // 「调整顺序」模式下，底部按钮是「完成」，用来退回表单
+        if (modalMode === 'measurement' && mform && mform.reorder) {
+          mform.reorder = false;
+          renderMeasurementForm();
+          defaultActions();
+          return;
+        }
+        closeModal();
+      } else if (e.target.id === 'saveModal') saveModal();
     };
     window.addEventListener('resize', () => {
       if (modalMode === null) renderChart();

@@ -24,6 +24,7 @@ const JSON_HEADERS = { 'content-type': 'application/json; charset=utf-8' };
 const NUMERIC_FIELDS = {
   height: { column: 'height', label: '身高', min: 20, max: 250, integer: false },
   weight: { column: 'weight', label: '体重', min: 0.5, max: 300, integer: false },
+  waist: { column: 'waist', label: '腰围', min: 20, max: 200, integer: false },
   visionLeft: { column: 'vision_left', label: '左眼视力', min: 0, max: 6, integer: false },
   visionRight: { column: 'vision_right', label: '右眼视力', min: 0, max: 6, integer: false },
   systolic: { column: 'systolic', label: '收缩压', min: 50, max: 300, integer: true },
@@ -89,7 +90,7 @@ async function getState(env) {
   const [members, measurements] = await env.DB.batch([
     env.DB.prepare('SELECT id, name, sex, birthday, emoji FROM members ORDER BY sort_order ASC, created_at ASC'),
     env.DB.prepare(
-      `SELECT id, member_id, date, time, height, weight, vision_left, vision_right,
+      `SELECT id, member_id, date, time, height, weight, waist, vision_left, vision_right,
               systolic, diastolic, pulse, note
          FROM measurements
         ORDER BY date DESC, time DESC, id DESC`
@@ -191,15 +192,50 @@ async function createMeasurement(request, env) {
 
   if (!Object.keys(values).length && !note) throw httpError(400, '请至少填写一项数据');
 
-  const id = makeId('r');
+  // 前端每次打开「记录一次数据」都会生成一个 id 并带上来。
+  // 如果上一次请求其实已经写成功了（只是网络超时 / 响应丢了），用户再点保存时
+  // 会带着同一个 id 重试：这里直接更新那一条并返回，避免插入第二条一样的记录。
+  const requestedId = normalizeRecordId(body.id);
+  if (requestedId) {
+    const existing = await env.DB.prepare('SELECT * FROM measurements WHERE id = ?').bind(requestedId).first();
+    if (existing) {
+      if (existing.member_id !== memberId) throw httpError(409, '记录编号冲突，请重新提交');
+      const sets = [];
+      const params = [];
+      for (const [key, spec] of Object.entries(NUMERIC_FIELDS)) {
+        sets.push(`${spec.column} = ?`);
+        params.push(values[key] === undefined ? null : values[key]);
+      }
+      await env.DB.prepare(
+        `UPDATE measurements SET date = ?, time = ?, note = ?, ${sets.join(', ')} WHERE id = ?`
+      )
+        .bind(date, time, note, ...params, requestedId)
+        .run();
+      const updated = await env.DB.prepare('SELECT * FROM measurements WHERE id = ?').bind(requestedId).first();
+      return json(toMeasurementApi(updated));
+    }
+  }
+
+  const id = requestedId || makeId('r');
   const columns = ['id', 'member_id', 'date', 'time', 'note', ...Object.keys(values).map((k) => NUMERIC_FIELDS[k].column)];
   const params = [id, memberId, date, time, note, ...Object.values(values)];
 
-  await env.DB.prepare(
-    `INSERT INTO measurements (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`
+  // 万一两个请求同时带着同一个 id 到达（极端并发），让后到的那个不报错。
+  const inserted = await env.DB.prepare(
+    `INSERT INTO measurements (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})
+     ON CONFLICT(id) DO NOTHING`
   )
     .bind(...params)
     .run();
+
+  if (requestedId && inserted.meta?.changes === 0) {
+    // 另一个请求已经先写进去了，按「同一次提交」返回已有记录。
+    const existing = await env.DB.prepare('SELECT * FROM measurements WHERE id = ?').bind(id).first();
+    if (existing) {
+      if (existing.member_id !== memberId) throw httpError(409, '记录编号冲突，请重新提交');
+      return json(toMeasurementApi(existing));
+    }
+  }
 
   return json({ id, memberId, date, time, note, ...values }, 201);
 }
@@ -383,6 +419,12 @@ function normalizeDate(value) {
 function normalizeTime(value) {
   const v = cleanStr(value, 5);
   return /^\d{2}:\d{2}$/.test(v) ? v : '';
+}
+
+/** 前端生成的记录 id（用于「保存重试」去重），格式不对就当没传。 */
+function normalizeRecordId(value) {
+  const v = cleanStr(value, 64);
+  return /^r[a-z0-9]{4,63}$/i.test(v) ? v : '';
 }
 
 function makeId(prefix) {
